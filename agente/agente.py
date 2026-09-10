@@ -873,13 +873,30 @@ async def _opcoes_agenda(n: int = 3) -> list[str]:
     return out
 
 
+def cancelar_handoff(numero: str, motivo: str = "") -> bool:
+    """Cancela um pedido de handoff pendente para este número.
+
+    Usado quando a conversa continua (nova mensagem do cliente) ou quando já
+    ficou resolvida (agendamento confirmado) — para não enviar depois a
+    mensagem de "estou ocupado", que atropelaria um desfecho já fechado.
+    Devolve True se havia algo para cancelar.
+    """
+    p = handoff_pendente.get(numero)
+    if p and not p["evento"].is_set():
+        p["cancelado"] = True
+        p["evento"].set()
+        print(f"↩️ handoff cancelado [{numero}] {motivo}".rstrip())
+        return True
+    return False
+
+
 async def processar_handoff(numero: str, metadata: dict):
     """Pedido de atendimento humano: pergunta ao responsável (Telegram) se está disponível
     e decide o que dizer ao cliente — ou propõe marcar hora, se ele não estiver livre."""
     nome = metadata.get("nome") or "O cliente"
 
     # 1. Perguntar ao responsável se está disponível agora
-    pend = {"evento": asyncio.Event(), "resposta": None}
+    pend = {"evento": asyncio.Event(), "resposta": None, "cancelado": False}
     handoff_pendente[numero] = pend
     await enviar_telegram_responsavel(
         f"🙋 PEDIDO DE ATENDIMENTO HUMANO\n\n"
@@ -898,6 +915,12 @@ async def processar_handoff(numero: str, metadata: dict):
     except asyncio.TimeoutError:
         pass
     handoff_pendente.pop(numero, None)
+
+    # Se a conversa continuou (ou já ficou resolvida) entretanto, não enviamos
+    # a mensagem de "estou ocupado" — senão atropelava um desfecho já fechado.
+    if pend.get("cancelado"):
+        print(f"↩️ Handoff de {numero} cancelado (conversa continuou)")
+        return
 
     disponivel = pend.get("resposta") == "sim"
 
@@ -948,7 +971,8 @@ def processar_metadata(numero: str, metadata: dict):
     asyncio.create_task(guardar_lead_airtable(numero, metadata))
 
     # Pedido explícito de atendimento humano → fluxo bidirecional com o responsável
-    if metadata.get("quer_humano") and numero not in handoff_pendente:
+    _ag_ok = (metadata.get("agendamento", {}) or {}).get("confirmado")
+    if metadata.get("quer_humano") and numero not in handoff_pendente and not _ag_ok:
         # Evita re-disparar logo a seguir a um handoff (cooldown simples por número)
         ultimo = handoff_realizado.get(numero, 0)
         if time.time() - ultimo > 120:
@@ -976,6 +1000,8 @@ def processar_metadata(numero: str, metadata: dict):
     # Cria evento no Calendar se reunião confirmada — dedup por data
     agendamento = metadata.get("agendamento", {})
     if agendamento.get("confirmado") and agendamento.get("data_hora_iso"):
+        # Reunião/visita fechada: cancelar qualquer pedido de humano ainda a decorrer
+        cancelar_handoff(numero, "agendamento confirmado")
         chave_evento = agendamento["data_hora_iso"]
         if calendario_criado.get(numero) != chave_evento:
             # Limite de segurança: evita criação em massa de eventos por abuso
@@ -1055,6 +1081,10 @@ async def webhook(request: Request):
             return {"status": "ignored"}
 
         print(f"📩 [{numero}]: {mensagem}")
+
+        # ── Nova mensagem do cliente: cancelar qualquer handoff a decorrer ──
+        #  (o pedido de humano em curso deixou de fazer sentido — a conversa continua)
+        cancelar_handoff(numero, "conversa continuou")
 
         # ── AGENTE EM PAUSA: o responsável assumiu esta conversa ──
         # Guarda a mensagem no histórico (contexto preservado) mas NÃO responde.
