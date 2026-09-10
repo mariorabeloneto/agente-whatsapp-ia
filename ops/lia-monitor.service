@@ -1,0 +1,8 @@
+[Unit]
+Description=Monitor de saude da Lia (containers + health + WhatsApp)
+After=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/home/ubuntu/monitor_lia.sh

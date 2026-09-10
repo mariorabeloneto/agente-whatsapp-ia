@@ -815,13 +815,66 @@ async def loop_polling_telegram():
             await asyncio.sleep(3)
 
 
+async def _estado_texto() -> str:
+    """Resumo de estado para o comando /estado."""
+    pausado = await historico.get_flag("pausa_global")
+    convs = await historico.count()
+    return (
+        f"{'⏸️ PAUSADO (a agente não responde a ninguém)' if pausado else '▶️ ATIVO (a agente está a responder)'}\n\n"
+        f"• Conversas guardadas: {convs}\n"
+        f"• Conversas em pausa (assumidas por ti): {len(conversa_pausada)}\n"
+        f"• Handoffs pendentes: {len(handoff_pendente)}\n\n"
+        f"Comandos: /pausar · /continuar · /estado · /retomar <telefone>"
+    )
+
+
 async def tratar_mensagem_responsavel(texto: str):
     """Processa uma mensagem vinda do responsável: comandos ou resposta a handoff."""
     t = (texto or "").strip()
-    low = t.lower()
+    low = t.lower().lstrip("/")
+
+    # ── Comandos globais (kill switch) ──
+    #  /pausar    -> a agente deixa de responder a TODOS os clientes
+    #  /continuar -> volta a responder
+    #  /estado    -> resumo do que está a acontecer
+    if low.split()[0] in ("pausar", "parar", "stop"):
+        await historico.set_flag("pausa_global", True)
+        print("⏸️ PAUSA GLOBAL ativada pelo responsável")
+        await enviar_telegram_responsavel(
+            "⏸️ Pausa ativada. A assistente deixa de responder a todos os clientes.\n"
+            "As mensagens continuam a ser guardadas. Escreve /continuar para retomar."
+        )
+        return
+
+    if low.split()[0] in ("continuar", "retomar_global", "ativar", "start"):
+        await historico.set_flag("pausa_global", False)
+        print("▶️ PAUSA GLOBAL desativada pelo responsável")
+        await enviar_telegram_responsavel("▶️ Assistente ativa outra vez. A responder normalmente.")
+        return
+
+    if low.split()[0] in ("estado", "status"):
+        await enviar_telegram_responsavel(await _estado_texto())
+        return
+
+    if low.split()[0] in ("ajuda", "help", "comandos"):
+        await enviar_telegram_responsavel(
+            "Comandos disponíveis:\n"
+            "/pausar — parar a assistente (todos os clientes)\n"
+            "/continuar — retomar\n"
+            "/estado — ver o que se passa\n"
+            "/relatorio — resultados (conversas, marcações, custo)\n"
+            "/retomar <telefone> — devolver uma conversa à assistente\n\n"
+            "Também podes responder SIM / NÃO a um pedido de atendimento humano."
+        )
+        return
+
+    if low.split()[0] in ("relatorio", "relatório", "resultados"):
+        from relatorio import formatar_relatorio, gerar_relatorio
+        await enviar_telegram_responsavel(formatar_relatorio(gerar_relatorio(dias=7)))
+        return
 
     # Comando: /retomar -> a Assistente volta a responder às conversas em pausa
-    if low.startswith("/retomar") or low.startswith("retomar"):
+    if low.startswith("retomar"):
         partes = t.split()
         if len(partes) >= 2 and partes[1].strip():
             alvo = partes[1].strip().replace("+", "").replace(" ", "")
@@ -1083,6 +1136,12 @@ async def webhook(request: Request):
 
         print(f"📩 [{numero}]: {mensagem}")
 
+        # ── PAUSA GLOBAL: a assistente está desligada pelo responsável ──
+        if await historico.get_flag("pausa_global"):
+            await historico.append(numero, "user", mensagem)
+            print(f"⏸️ [{numero}] pausa global ativa — contexto guardado, sem resposta")
+            return {"status": "paused_global"}
+
         # ── Nova mensagem do cliente: cancelar qualquer handoff a decorrer ──
         #  (o pedido de humano em curso deixou de fazer sentido — a conversa continua)
         cancelar_handoff(numero, "conversa continuou")
@@ -1239,7 +1298,8 @@ async def health():
     tudo_ok = all(v["ok"] for v in checks.values())
     return {"status": "ok" if tudo_ok else "degraded", "checks": checks,
             "conversas_ativas": await historico.count(), "em_pausa": len(conversa_pausada),
-            "historico_persistente": historico.persistente}
+            "historico_persistente": historico.persistente,
+            "pausado": await historico.get_flag("pausa_global")}
 @app.on_event("startup")
 async def _iniciar_polling_telegram():
     """Arranca o long-polling do Telegram (respostas do responsável ao handoff)."""

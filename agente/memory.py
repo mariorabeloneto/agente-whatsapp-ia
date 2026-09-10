@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
 try:
     import redis.asyncio as aioredis
@@ -32,7 +33,7 @@ class HistoricoStore:
                  ttl: int = 7 * 24 * 3600):
         self.max_len = max_len
         self.ttl = ttl
-        self._mem: dict[str, list] = {}
+        self._mem: dict[str, "Any"] = {}
         self._redis = None
         self._redis_url = redis_url
         if redis_url and aioredis is not None:
@@ -83,6 +84,28 @@ class HistoricoStore:
                 await self._redis.delete(self._key(numero))
             except Exception:
                 pass
+
+    # ── Flags de controlo (ex.: pausa global) ──
+    async def set_flag(self, nome: str, valor: bool) -> None:
+        """Guarda uma flag booleana (persistente no Redis; fallback em memória)."""
+        self._mem[f"flag:{nome}"] = valor
+        if self._redis is not None:
+            try:
+                if valor:
+                    await self._redis.set(_PREFIX + "flag:" + nome, "1")
+                else:
+                    await self._redis.delete(_PREFIX + "flag:" + nome)
+            except Exception as e:
+                print(f"⚠️ memory.set_flag falhou ({e})")
+
+    async def get_flag(self, nome: str) -> bool:
+        """Lê uma flag booleana."""
+        if self._redis is not None:
+            try:
+                return bool(await self._redis.get(_PREFIX + "flag:" + nome))
+            except Exception:
+                pass
+        return bool(self._mem.get(f"flag:{nome}", False))
 
     async def count(self) -> int:
         if self._redis is not None:
