@@ -100,6 +100,29 @@ def formatar_relatorio(d: dict) -> str:
     )
 
 
+def limpar_antigos(dias: int, caminho: Path | None = None) -> int:
+    """Remove dos traces os registos com mais de `dias`. Devolve quantos saíram.
+
+    Retenção de dados: os traces guardam excertos de conversa (dados pessoais),
+    por isso não devem ficar indefinidamente."""
+    caminho = caminho or TRACES
+    registos = carregar(caminho)
+    if not registos:
+        return 0
+    corte = datetime.now(timezone.utc) - timedelta(days=dias)
+    manter = []
+    for r in registos:
+        try:
+            if datetime.fromisoformat(r["ts"]) >= corte:
+                manter.append(r)
+        except Exception:
+            manter.append(r)
+    removidos = len(registos) - len(manter)
+    caminho.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in manter) + ("\n" if manter else ""),
+                       encoding="utf-8")
+    return removidos
+
+
 def enviar_telegram(texto: str):
     import httpx
     token = os.getenv("TELEGRAM_TOKEN")
@@ -115,7 +138,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dias", type=int, default=None)
     ap.add_argument("--telegram", action="store_true")
+    ap.add_argument("--limpar", type=int, metavar="DIAS",
+                    help="apaga dos traces os registos com mais de DIAS (retenção)")
     args = ap.parse_args()
+    if args.limpar is not None:
+        n = limpar_antigos(args.limpar)
+        print(f"🧹 Removidos {n} registo(s) com mais de {args.limpar} dias dos traces.")
+        return 0
     texto = formatar_relatorio(gerar_relatorio(dias=args.dias))
     print(texto)
     if args.telegram:

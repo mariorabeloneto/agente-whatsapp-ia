@@ -73,6 +73,7 @@ services:
       - EVOLUTION_INSTANCE=${EVOLUTION_INSTANCE:-meu-agente}
       - PYTHONUNBUFFERED=1
       - REDIS_URL=redis://redis:6379/7
+      - TRACES_ANONIMIZAR=${TRACES_ANONIMIZAR:-false}
     env_file:
       - ../agente/.env
     volumes:

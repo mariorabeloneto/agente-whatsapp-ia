@@ -8,6 +8,7 @@ Ficheiro de saída: traces/conversations.jsonl (uma linha por turno).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -18,10 +19,29 @@ ROOT = Path(__file__).resolve().parent.parent
 TRACES_DIR = Path(os.environ.get("TRACES_DIR", ROOT / "traces"))
 TRACES_FILE = TRACES_DIR / "conversations.jsonl"
 
+# Privacidade por desenho: se TRACES_ANONIMIZAR=true, os traces NÃO guardam o
+# número em claro nem o texto das mensagens (só um hash e o comprimento). Útil
+# para cumprir minimização de dados / RGPD.
+ANONIMIZAR = os.environ.get("TRACES_ANONIMIZAR", "false").lower() in ("1", "true", "yes", "sim")
+
 # Preço por 1M tokens (USD) — ajustar ao modelo usado. Valores por omissão:
 # DeepSeek chat (entrada/saída). Configurável por env.
 PRICE_IN_PER_M = float(os.environ.get("PRICE_IN_PER_M", "0.27"))
 PRICE_OUT_PER_M = float(os.environ.get("PRICE_OUT_PER_M", "1.10"))
+
+
+def _ident(numero: str) -> str:
+    """Identificador do número: em claro ou anonimizado (hash), conforme a config."""
+    if not ANONIMIZAR:
+        return numero
+    return "anon-" + hashlib.sha256((numero or "").encode()).hexdigest()[:12]
+
+
+def _texto(t: str) -> str:
+    """Texto da mensagem: em claro ou omitido (só comprimento), conforme a config."""
+    if not ANONIMIZAR:
+        return (t or "")[:500]
+    return f"[omitido:{len(t or '')}c]"
 
 
 def estimate_cost(prompt_tokens: int, completion_tokens: int) -> float:
@@ -47,7 +67,7 @@ def record_turn(
     agendamento = metadata.get("agendamento", {}) or {}
     registo = {
         "ts": datetime.now(timezone.utc).isoformat(),
-        "numero": numero,
+        "numero": _ident(numero),
         "model": model,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -61,8 +81,8 @@ def record_turn(
         "quer_humano": metadata.get("quer_humano"),
         "agendamento_confirmado": agendamento.get("confirmado"),
         "proxima_accao": metadata.get("proxima_accao_sugerida"),
-        "user_message": user_message[:500],
-        "assistant_message": assistant_message[:500],
+        "user_message": _texto(user_message),
+        "assistant_message": _texto(assistant_message),
     }
     try:
         TRACES_DIR.mkdir(parents=True, exist_ok=True)

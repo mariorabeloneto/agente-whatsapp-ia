@@ -82,3 +82,45 @@ def test_relatorio_ignora_linhas_mas(tmp_path):
     f.write_text('{"ts":"2026-09-10T10:00:00+00:00","numero":"a@s"}\nlixo nao json\n', encoding="utf-8")
     d = relatorio.gerar_relatorio(caminho=f)
     assert d["conversas"] == 1
+
+
+# ── Privacidade: anonimização de traces ──
+
+def test_traces_anonimizados(tmp_path, monkeypatch):
+    import traces as tr
+    monkeypatch.setattr(tr, "TRACES_DIR", tmp_path)
+    monkeypatch.setattr(tr, "TRACES_FILE", tmp_path / "c.jsonl")
+    monkeypatch.setattr(tr, "ANONIMIZAR", True)
+    reg = tr.record_turn("351913326279@s.whatsapp.net", user_message="o meu email é x@y.pt",
+                         assistant_message="ok", prompt_tokens=10, completion_tokens=5)
+    assert reg["numero"].startswith("anon-")
+    assert "351913326279" not in reg["numero"]
+    assert "email" not in reg["user_message"]
+    assert reg["user_message"].startswith("[omitido:")
+
+
+def test_traces_em_claro_por_omissao(tmp_path, monkeypatch):
+    import traces as tr
+    monkeypatch.setattr(tr, "TRACES_DIR", tmp_path)
+    monkeypatch.setattr(tr, "TRACES_FILE", tmp_path / "c.jsonl")
+    monkeypatch.setattr(tr, "ANONIMIZAR", False)
+    reg = tr.record_turn("351913326279@s.whatsapp.net", user_message="olá")
+    assert reg["numero"] == "351913326279@s.whatsapp.net"
+    assert reg["user_message"] == "olá"
+
+
+# ── Retenção de traces ──
+
+def test_limpar_traces_antigos(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    antigo = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    novo = datetime.now(timezone.utc).isoformat()
+    f = tmp_path / "c.jsonl"
+    f.write_text("\n".join(json.dumps(r) for r in [
+        {"ts": antigo, "numero": "velho@s"},
+        {"ts": novo, "numero": "novo@s"},
+    ]), encoding="utf-8")
+    n = relatorio.limpar_antigos(7, caminho=f)
+    assert n == 1
+    restantes = relatorio.carregar(f)
+    assert len(restantes) == 1 and restantes[0]["numero"] == "novo@s"
