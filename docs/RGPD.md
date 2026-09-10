@@ -119,6 +119,8 @@ RGPD exige que consigas demonstrar conformidade.
 
 1. **Resolver a transferência para a China**: SCCs com a DeepSeek **ou** migrar
    para um fornecedor com alojamento na UE. *(bloqueante)*
+   → Procedimento pronto em **`docs/migracao-llm-runbook.md`** (Mistral/OVHcloud;
+   o código já suporta — o fornecedor é configuração).
 2. **Contrato de subcontratação (art. 28.º)** com cada cliente + lista de
    subcontratantes. *(bloqueante)*
 3. **Aviso de privacidade** (ver `docs/aviso-privacidade.md`) acessível a quem
