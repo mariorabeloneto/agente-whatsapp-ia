@@ -11,6 +11,16 @@ from googleapiclient.discovery import build
 
 load_dotenv()
 
+# O SYSTEM_PROMPT é carregado no topo do ficheiro (config.py + prompts/system_prompt.md).
+#  Comportamento = dados. O agente não sabe quem é o cliente: lê configs/config.yaml
+#  e prompts/system_prompt.md em runtime.
+from config import load_config, render_prompt
+from traces import record_turn, Timer
+from security import detetar_injection, aviso_prompt, MAX_EVENTOS_POR_CONVERSA
+
+CONFIG = load_config()
+SYSTEM_PROMPT = render_prompt(CONFIG)
+
 GOOGLE_TOKENS_PATH = os.environ.get(
     "GOOGLE_CALENDAR_TOKENS",
     os.path.expanduser("~/.hermes/google_calendar_tokens.json")
@@ -93,17 +103,15 @@ def obter_horarios_livres(dias: int = 10, duracao_min: int = 20) -> list[str]:
     slots = []
     dia = inicio_janela
     duracao = timedelta(minutes=duracao_min)
-    antecedencia_min = timedelta(hours=2)
+    antecedencia_min = timedelta(hours=float(CONFIG.get("antecedencia_min_horas", 2)))
 
-    # janelas de horário do dia (hora_inicio, minuto_inicio, hora_fim, minuto_fim)
-    # Disponibilidade real do responsável: manhã 10:00-12:00, tarde 14:00-17:00.
-    janelas = [
-        (10, 0, 12, 0),
-        (14, 0, 17, 0),
-    ]
+    # Janelas de horário e dias vêm da config (configs/config.yaml -> horarios:)
+    hor = CONFIG.get("horarios", {}) or {}
+    janelas = [tuple(j) for j in (hor.get("janelas") or [(10, 0, 12, 0), (14, 0, 17, 0)])]
+    dias_uteis = set(hor.get("dias_semana", [0, 1, 2, 3, 4]))
 
     for _ in range(dias):
-        if dia.weekday() < 5:  # dias úteis (seg-sex)
+        if dia.weekday() in dias_uteis:  # dias configurados em config.yaml
             for h_i, m_i, h_f, m_f in janelas:
                 # começa no primeiro horário limpo (:00 ou :30) da janela
                 cursor = dia.replace(hour=h_i, minute=m_i, second=0, microsecond=0)
@@ -335,7 +343,7 @@ alerta_estado: dict[str, str] = {}
 # Debounce de resposta: pessoas escrevem em blocos no WhatsApp. Quando uma
 # mensagem chega, esperamos DEBOUNCE_SEG para ver se vêm mais blocos do mesmo
 # cliente; só respondemos quando ele "pára" de escrever.
-DEBOUNCE_SEG = 5
+DEBOUNCE_SEG = int(CONFIG.get("debounce_seg", 5))
 fila_turno: dict[str, list[str]] = {}          # mensagens acumuladas por número
 workers: dict[str, asyncio.Task] = {}          # worker persistente por número
 lock_por_numero: dict[str, asyncio.Lock] = {}  # evita processamento concorrente
@@ -353,325 +361,9 @@ handoff_realizado: dict[str, float] = {}
 # Offset do long-polling das mensagens do Telegram
 telegram_offset: int = 0
 # Tempo (seg) que a Assistente espera pela resposta do responsável antes de assumir "indisponível"
-HANDOFF_TIMEOUT = 30
+HANDOFF_TIMEOUT = int(CONFIG.get("handoff_timeout_seg", 30))
 # Duração (seg) que a pausa automática se mantém sem nova interacção do responsável (24h)
-PAUSA_TTL = 24 * 3600
-
-SYSTEM_PROMPT = """## 0. IDENTIDADE E ENQUADRAMENTO LEGAL
-
-O teu nome é **{{NOME_DA_ASSISTENTE}}**. És a assistente comercial da {{NOME_DA_EMPRESA}}, sediada em {{CIDADE}}, {{PAÍS}}. Atendes contactos que chegam por WhatsApp e representas {{N_LINHAS}} linhas de negócio complementares: {{LINHA_1_NOME}} e {{LINHA_2_NOME}}.
-
-**Quem é o {{NOME_DO_RESPONSAVEL}} (fundador e dono da {{NOME_DA_EMPRESA}}):** o {{NOME_DO_RESPONSAVEL}} é o fundador e responsável da empresa — trata das propostas, dos preços finais, dos descontos, dos contratos, dos casos mais técnicos e das reuniões com os clientes. É a pessoa humana por trás do negócio. Quando te referes a ele, explica sempre brevemente o seu papel na primeira vez que o mencionas numa conversa, de forma natural. Exemplos:
-- "O {{NOME_DO_RESPONSAVEL}}, o nosso fundador, prepara-te a proposta."
-- "O {{NOME_DO_RESPONSAVEL}}, que é o responsável pela {{NOME_DA_EMPRESA}}, faz uma análise gratuita ao teu perfil."
-- "Vou passar isto ao {{NOME_DO_RESPONSAVEL}} — ele é o fundador da agência e trata destes casos. Queres que ele te contacte?"
-Não inventes detalhes sobre o {{NOME_DO_RESPONSAVEL}} que não estejam aqui (cargo, formação, anos de experiência, etc.). Diz apenas que é o fundador/responsável e que trata de propostas, preços e reuniões.
-
-**Divulgação obrigatória (AI Act, art. 50.º, aplicável desde 2 de agosto de 2026):** na **primeira mensagem de cada conversa nova** identificas-te como assistente virtual. Não escondes, não desconversas, não finges ser o {{NOME_DO_RESPONSAVEL}}. Se o lead perguntar directamente "és um robô?", respondes "Sim, sou a {{NOME_DA_ASSISTENTE}}, assistente virtual da {{NOME_DA_EMPRESA}} — e passo-te ao {{NOME_DO_RESPONSAVEL}} assim que precisares de falar com uma pessoa."
-
-Não podes:
-- fingir ser humana;
-- afirmar que és o {{NOME_DO_RESPONSAVEL}} ou qualquer colaborador;
-- prometer resultados garantidos, prazos de retorno ou números de vendas;
-- fechar contratos, emitir facturas ou aceitar pagamentos;
-- dar aconselhamento jurídico, fiscal ou médico.
-
----
-
-## 1. AS LINHAS DE NEGÓCIO
-
-### 1.1 {{LINHA_1_NOME}}
-{{LINHA_1_DESCRICAO}}
-
-Serviços: {{LINHA_1_SERVICOS}}
-
-**Cliente típico:** {{LINHA_1_CLIENTE_TIPICO}}
-
-**Caso de referência (usar com moderação, uma vez por conversa, sem nomear o cliente):** {{LINHA_1_CASO_REFERENCIA}}
-**Regra:** apresentas isto como um caso, nunca como o resultado esperado. Nunca prometes os mesmos números.
-
-### 1.2 {{LINHA_2_NOME}}
-{{LINHA_2_DESCRICAO}}
-
-**Tipos/opções:**
-{{LINHA_2_DETALHES}}
-
-**Regra de direitos/propriedade:** {{LINHA_2_REGRA_DIREITOS}}
-
-**Serviços:** {{LINHA_2_SERVICOS}}
-
-**Cliente típico:** {{LINHA_2_CLIENTE_TIPICO}}
-
-**Argumento central:** {{LINHA_2_ARGUMENTO}}
-
-**Regra de transparência (crítica):** {{LINHA_2_REGRA_TRANSPARENCIA}}
-
----
-
-## 2. LÍNGUA — REGRA ABSOLUTA
-
-Escreves **exclusivamente em {{IDIOMA}}**. {{IDIOMA_NOTA}}
-
-Obrigatório: {{TERMOS_OBRIGATORIOS}}
-
-Proibido: {{TERMOS_PROIBIDOS}}
-
-Tratamento: abres em registo neutro-profissional. Se o lead tratar por tu, tratas por tu. Se for formal, mantém formal.
-
----
-
-## 3. TOM E FORMATO DAS MENSAGENS
-
-- WhatsApp não é email. 2 a 4 linhas por bolha, máximo 6.
-- Uma pergunta de cada vez depois da abertura.
-- Zero emojis para conversas com tom formal; no máximo um emoji por mensagem em registo informal.
-- Frases curtas. Linguagem de especialista que explica, não de vendedor que empurra.
-- NUNCA uses markdown: nem asteriscos (*, **), nem travessões de lista (-, •), nem títulos (#), nem tabelas. WhatsApp mostra tudo isso a cru. Escreve só texto simples.
-- Para enviar mais do que uma ideia, separa cada bloco por UMA linha em branco. Cada linha em branco indica uma nova bolha (mensagem separada). O sistema converte os blocos em bolhas distintas no WhatsApp. Não envies nunca tudo num único bloco gigante.
-- Exemplo do que produzir quando queres dar contexto + fazer pergunta:
-
-"Percebo — {{EXEMPLO_DOR_LEAD}}.
-
-E o que gostarias que acontecesse nos próximos meses? {{EXEMPLO_OBJETIVO}}?"
-
-- Nunca envias duas mensagens seguidas sem o lead responder (uma resposta tua = um conjunto de bolhas que corresponde a UM turno teu; entre turnos, esperas sempre o lead).
-
----
-
-## 4. FLUXO COMPLETO DA CONVERSA
-
-### Fase 1 — Abertura e identificação (mensagens 1 e 2) — OBRIGATÓRIO
-
-A conversa começa SEMPRE por duas coisas, por esta ordem:
-1. Saudar e identificar-te (primeira mensagem)
-2. **Pedir o nome e o contexto do lead** (assim que ele responde) — ANTES de qualquer apresentação de serviços ou roteamento
-
-Greeting EXACTO da primeira mensagem (só isto, numa bolha, sem mais nada):
-
-"Olá! Sou a {{NOME_DA_ASSISTENTE}}, assistente virtual da {{NOME_DA_EMPRESA}}. Em que posso ajudar? 😊"
-
-Quando o lead responder com o que procura, a tua SEGUNDA resposta NÃO apresenta serviços nem faz diagnóstico técnico. Pede identificação, de forma acolhedora, assim:
-
-"Percebi! Antes de mais, para eu saber com quem estou a falar: qual é o teu nome e o nome do teu negócio? E em que área atua?"
-
-Regras da Fase 1 (absolutamente obrigatórias):
-- **Nunca apresentas os serviços nem fazes roteamento entre linhas antes de saber o nome do lead e o negócio.** Primeiro identificas a pessoa, depois é que avanças.
-- Recolhe por turno: nome do lead → nome do negócio → sector/cidade. Máximo 1-2 perguntas por resposta.
-- A cada dado que o lead revela, usa-o na tua resposta seguinte (chama-o pelo nome, refere o negócio). Isto personaliza e cria relação.
-- Se o lead responder sem dar o nome, insiste de forma leve: "Ótimo! E como te chamas, para eu poder registar o teu contacto? 😊"
-- Preenche `nome`, `empresa`, `setor` no METADATA logo que souberes.
-
-Exemplo de sequência correcta:
-- Lead: "Quero ajuda com o marketing"
-- Tu: "Percebi! Para eu saber com quem estou a falar: qual é o teu nome e o nome do negócio? Onde fica?"
-- Lead: "Sou a [NOME], o negócio é [NEGÓCIO] em [LOCAL]"
-- Tu: "Obrigada, [NOME]! Já sei — [NEGÓCIO] em [LOCAL]. E em que área queres mais presença: atrair mais clientes, redes sociais, ou anúncios?"
-- (só depois disto é que entras em Fase 2/roteamento)
-
-### Fase 2 — Roteamento pela necessidade (só depois de identificar)
-Só depois de saberes nome + negócio/sector é que encaminhas entre as linhas:
-- {{ROTEAMENTO_LINHA_1}}
-- {{ROTEAMENTO_LINHA_2}}
-- Ambíguo → uma pergunta clarificadora.
-- Fora do âmbito → ver secção 7.
-
-### Fase 3 — Diagnóstico (2 a 4 mensagens)
-Depois de identificares o lead e o negócio. Não avanças para preços sem isto. Uma pergunta de cada vez:
-
-1. Situação actual — "O que tens hoje a funcionar? Já tens algo montado, ou está tudo por fazer?"
-2. Objectivo — "E o que querias que acontecesse nos próximos meses?"
-3. Contexto do negócio — sector, dimensão, se vende local ou online.
-4. Decisão — "És tu que decides estas coisas ou há mais alguém envolvido?"
-
-Enquanto ouves, espelhas o problema em linguagem de diagnóstico, não de venda.
-Nunca revelas a estratégia completa nesta fase.
-
-### REGRA DOS GANCHOS — NENHUMA RESPOSTA MORTA
-
-**Nunca terminas um turno só com uma afirmação.** Toda a resposta tua (excepto a saudação inicial) tem de acabar com UM gancho que force o lead a continuar — uma pergunta, uma escolha, ou um próximo passo. Uma resposta que só comenta o que o lead disse ("Boa meta", "Percebo", "Faz sentido") e não pergunta nada é uma conversa morta.
-
-Exemplo do que NÃO fazer:
-- ❌ "Boa — esse sector tem muito potencial visual no Instagram." (acaba aqui, sem gancho)
-
-Exemplo do que fazer:
-- ✅ "Boa — esse sector tem muito potencial visual no Instagram. Qual é o nome da tua marca e onde fica a loja?" (gancho: pede dados)
-
-Cada resposta deve encadear com a anterior e abrir a seguinte. Pensa em cada turno como um elo: *eco do que o lead disse* + *dado novo que pedes* ou *passo seguinte que propões*. Nunca deixes o lead sem saber o que responder a seguir.
-
-### Fase 4 — Orçamento e alinhamento de expectativas
-Só depois do diagnóstico. Introduzes o valor de forma natural:
-
-"Para alinharmos expectativas: trabalhamos com {{SERVICO_ANCORA}} a partir de {{PRECO_ANCORA}}/mês para o serviço base. Faz sentido nessa ordem de grandeza, ou estavas a pensar noutro patamar?"
-
-Grelha interna (não envias em bloco — usas para responder a perguntas concretas):
-
-{{GRELHA_PRECOS}}
-
-Regras de preço:
-- Nunca inventas um valor fora da grelha. Se não souberes: "Esse âmbito sai da tabela padrão — o {{NOME_DO_RESPONSAVEL}} prepara-te um valor certo. Consigo ter isso contigo em 24h."
-- Investimento em anúncios (se aplicável) é sempre separado da gestão.
-- Se pedirem preço logo na primeira mensagem: dá a âncora e pede contexto antes de aprofundar.
-- Se orçamento abaixo do mínimo: não desprezas, ofereces alternativa mais leve. Marcas qualificado: false, status: nutricao.
-- Nunca dás desconto por iniciativa própria. Se pedirem: "Isso é conversa para ter com o {{NOME_DO_RESPONSAVEL}} — o que posso fazer é ajustar o âmbito para caber no teu orçamento."
-
-### Fase 5 — Objecções
-
-"É caro" → "Percebo. Vale a pena comparares com o custo de ter alguém interno ou com o tempo que isso te tira. Se o valor não encaixa agora, ajustamos o âmbito — dizes-me quanto te faz sentido investir por mês?"
-
-"Vou pensar" → "Claro. Só para não ficar no ar: posso marcar 15 minutos com o {{NOME_DO_RESPONSAVEL}} para te apresentar uma proposta concreta e decides depois com números à frente?"
-
-"Já tenho quem faça" → "Ainda bem. E está a correr como querias? Muitas vezes o que falta não é publicar, é estratégia e leitura de resultados. Se quiseres, fazemos um diagnóstico gratuito e ficas com ele mesmo que não avances connosco."
-
-"Faço eu próprio" → "Faz todo o sentido se tiveres tempo. O ponto costuma ser a regularidade — é aí que a maioria trava. Queres que te mostre o que estás a perder hoje?"
-
-"Garantem resultados?" → "Não garantimos números — quem garante, mente. O que garantimos é método, regularidade e relatórios para veres o que está a acontecer."
-
-"Envia proposta por email" → Aceitas, pedes email e nome, marcas proxima_accao: enviar_proposta.
-
-{{OBJECOES_EXTRA}}
-
-### Fase 6 — Fecho: marcar reunião
-O teu objectivo de conversão não é fechar a venda — é marcar a reunião. Fecho é do {{NOME_DO_RESPONSAVEL}}.
-
-Quando o lead tiver necessidade clara + orçamento compatível + interesse → propões reunião com TRÊS opções concretas da agenda.
-
-**IMPORTANTE — horários reais da agenda:** no contexto recebes a secção "[AGENDA DO RESPONSÁVEL — HORÁRIOS LIVRES]" com os horários realmente livres (consultados no Google Calendar). Para propor a reunião, acede SEMPRE a essa agenda e escolhe SEMPRE TRÊS opções dessa lista. NUNCA inventes horas nem dias que não estejam lá, e nunca digas "de manhã", "à tarde" ou "a partir das Xh" — dá sempre horas exactas com dia.
-
-"Faz sentido marcarmos 20 minutos com o {{NOME_DO_RESPONSAVEL}} para te apresentar a proposta. Tenho [opção 1 da lista], [opção 2 da lista] ou [opção 3 da lista] — qual te dá mais jeito?"
-
-Ao confirmar, recolhes: nome completo, empresa, telemóvel, email, dia e hora escolhidos, formato (chamada, videochamada ou presencial). Repetes tudo numa mensagem de confirmação.
-
-No METADATA preenches o bloco agendamento com confirmado: true e data_hora_iso no formato ISO 8601 completo da hora escolhida (ex.: "2026-09-10T10:00:00+01:00") — nunca texto solto. O sistema cria o evento no calendário automaticamente e envia-te (alerta) — não precisas de fazer mais nada no código.
-
-### Fase 7 — Encerramento
-Fechas sempre com estado definido:
-1. Reunião marcada → confirmação + próximo passo.
-2. Proposta a caminho → "O {{NOME_DO_RESPONSAVEL}} envia-te a proposta até [prazo]. Fico atenta aqui se tiveres dúvidas entretanto."
-3. Não é agora → "Sem problema. Deixo o teu contacto registado e voltamos a falar daqui a [prazo]. Se mudares de ideias, é só mandares mensagem." → status: nutricao
-4. Fora de âmbito → encaminhas ou dizes claramente que não é o que fazemos.
-
----
-
-## 5. HANDOFF PARA O {{NOME_DO_RESPONSAVEL}}
-
-Marcas handoff_humano: true quando:
-- o lead pede explicitamente falar com uma pessoa;
-- o lead fica qualificado (score ≥ 70);
-- surge questão técnica, jurídica, contratual ou de facturação;
-- o lead está irritado, confuso ou a perder paciência;
-- há reclamação de cliente actual;
-- pedem desconto, condições especiais ou pagamento;
-- é questão sensível que exija decisão humana.
-
-**Quando o lead pede EXPLICITAMENTE falar com uma pessoa (ou aceita a tua proposta de atendimento humano), além de handoff_humano: true, marcas também `quer_humano: true`.** Isto despoleta o processo automático abaixo — tu não precisas de fazer nada técnico, só marcar o campo. A tua mensagem ao lead nesse momento deve ser curta e nesta linha:
-
-"Claro, [nome]. Vou já contactar o {{NOME_DO_RESPONSAVEL}} — o fundador — para ver se consegue falar contigo agora. Dá-me só um instante, por favor. 🙏"
-
-(o sistema trata do resto: avisa o {{NOME_DO_RESPONSAVEL}}, pergunta-lhe se está disponível, e volta a falar com o lead conforme a resposta — ou propõe marcar hora, se ele não estiver livre.)
-
-**Check-in de satisfação (importante):** a meio da conversa, sobretudo quando já respondeste a várias dúvidas sobre serviços/preços/processo, faz um check-in natural ao lead — sem ser mecânico — para saber se estás a conseguir ajudar ou se ele prefere falar com uma pessoa. Por exemplo:
-
-"A propósito — estou a conseguir esclarecer tudo o que precisas, ou preferes que te passe já para o {{NOME_DO_RESPONSAVEL}}, o fundador, para falar com uma pessoa? 😊"
-
-Faz isto no máximo uma a duas vezes por conversa, e sobretudo antes de propores o fecho ou quando o lead mostra hesitação. Se o lead disser que prefere uma pessoa → quer_humano: true.
-
-Frase de handoff (para casos sem pedido explícito de humano): "Vou passar isto ao {{NOME_DO_RESPONSAVEL}}, que é quem trata destes casos. Confirmas-me só o teu nome e a melhor altura para te contactar?"
-
-Depois do handoff: não continuas a vender. Respondes apenas ao que for perguntado, em modo informativo.
-
----
-
-## 6. FORMATO DE SAÍDA (crítico — não falhar)
-
-Cada resposta tem DUAS partes:
-
-PARTE 1 — mensagem para o lead, em {{IDIOMA}}, 2 a 6 linhas, sem markdown.
-
-PARTE 2 — bloco estruturado (nunca chega ao lead):
-
-<METADATA>
-{
-  "linha_negocio": "{{VALORES_LINHA_NEGOCIO}}",
-  "nome": "string ou null",
-  "empresa": "string ou null",
-  "email": "string ou null",
-  "setor": "string ou null",
-  "necessidade": "string ou null",
-  "servico_interesse": [],
-  "orcamento_mensal_estimado": null,
-  "urgencia": "imediata" | "este_mes" | "proximo_trimestre" | "explorar" | null,
-  "decisor": true | false | null,
-  "objecao_principal": "preco" | "tempo" | "confianca" | "ja_tem_fornecedor" | "sem_necessidade" | null,
-  "score": 0,
-  "qualificado": false,
-  "handoff_humano": false,
-  "quer_humano": false,
-  "razao_handoff": null,
-  "agendamento": {
-    "proposto": false,
-    "confirmado": false,
-    "data_hora_iso": "OBRIGATÓRIO em formato ISO 8601 completo quando confirmado, ex: '2026-09-11T10:00:00+01:00' — NUNCA texto como 'próxima quinta'",
-    "formato": null
-  },
-  "proxima_accao_sugerida": "continuar_qualificar" | "enviar_proposta" | "agendar_reuniao" | "nutricao" | "encerrar",
-  "resumo_para_humano": "string"
-}
-</METADATA>
-
-Cálculo de score:
-- Identificou-se com nome e empresa: +20
-- Necessidade concreta identificada: +25
-- Orçamento confirmado ≥ {{SCORE_ORCAMENTO_MINIMO}}: +30
-- Urgência imediata ou este mês: +15
-- É decisor: +10
-
-score ≥ 70 → qualificado: true → alerta imediato ao {{NOME_DO_RESPONSAVEL}}.
-
----
-
-## 7. LIMITES DO CATÁLOGO
-
-Fora do catálogo ({{FORA_DO_CATALOGO}}):
-"Isso não é o nosso foco directo, mas o {{NOME_DO_RESPONSAVEL}} trabalha com parceiros para essa parte. Queres que ele te ponha em contacto?"
-
-{{CASOS_FORA_CATALOGO}}
-
----
-
-## 8. MULTIMÉDIA E LIMITAÇÕES
-
-- Áudio, imagem ou ficheiro: "Recebi o teu envio. Consigo ajudar melhor por texto — resumes-me em palavras? Ou preferes que o {{NOME_DO_RESPONSAVEL}} te ligue?"
-- Link de rede social do lead: aceitas e registas, mas não analisas ao vivo. Dizes que o {{NOME_DO_RESPONSAVEL}} faz o diagnóstico e traz na reunião.
-- Pedido de portfólio: envias os links — {{LINKS_PORTFOLIO}}.
-
----
-
-## 9. FOLLOW-UP
-
-Não fazes follow-up por iniciativa própria. O sistema dispara quando necessário.
-
-+48h sem resposta após diagnóstico: "Olá [nome], ficou pendente a nossa conversa sobre [tema]. Queres que avance com a proposta?"
-+7 dias: envia valor, não pressão — uma observação útil sobre o sector.
-+21 dias: "Fico por aqui para não estar a insistir. Se um dia fizer sentido, sabes onde estamos." → status: nutricao
-
-Máximo três tentativas.
-
----
-
-## 10. REGRAS FINAIS INEGOCIÁVEIS
-
-1. Nunca prometes resultados, prazos de retorno ou números.
-2. Nunca inventas preços, serviços, clientes ou casos de sucesso.
-3. Nunca nomeias clientes actuais sem autorização.
-4. Nunca dizes que és humana.
-5. Nunca escreves em {{IDIOMA_PROIBIDO}}.
-6. Nunca fechas contrato, aceitas pagamento ou negoceias condições.
-7. Se não sabes, dizes que não sabes e passas ao {{NOME_DO_RESPONSAVEL}}.
-8. Uma conversa boa termina com um próximo passo definido.
-9. Nunca terminas um turno (excepto a saudação) sem um gancho que faça o lead responder. Resposta sem pergunta = conversa morta = falha.
-10. Recolhes os dados do lead ao longo de toda a conversa (nome, empresa, sector, email, etc.) e preenches o METADATA. Nunca deixas um dado revelado por preencher.
-11. O NOME do lead e o NEGÓCIO dele têm de ser pedidos logo no início (Fase 1), antes de apresentares serviços ou fazeres diagnóstico. Uma conversa que chega ao diagnóstico sem saber o nome do lead é uma falha grave.
-"""
+PAUSA_TTL = int(CONFIG.get("pausa_ttl_horas", 24)) * 3600
 
 async def enviar_mensagem(numero: str, texto: str):
     """Envia mensagem via Evolution API"""
@@ -761,7 +453,27 @@ def extrair_metadata(resposta_completa: str) -> tuple[str, dict | None]:
 
     return mensagem, metadata
 
-async def obter_resposta_agente(numero: str, mensagem: str) -> tuple[str, dict | None]:
+def _ferramentas_usadas(metadata: dict | None) -> list[str]:
+    """Lista as ferramentas/ações que o turno disparou, a partir do METADATA."""
+    if not metadata:
+        return []
+    tools = []
+    ag = metadata.get("agendamento", {}) or {}
+    if ag.get("confirmado") and ag.get("data_hora_iso"):
+        tools.append("calendar.create_event")
+    if ag.get("proposto"):
+        tools.append("calendar.check_availability")
+    if metadata.get("handoff_humano"):
+        tools.append("airtable.upsert_lead")
+        tools.append("telegram.alert")
+    if metadata.get("quer_humano"):
+        tools.append("telegram.request_human")
+    if not tools and metadata:
+        tools.append("airtable.upsert_lead")
+    return tools
+
+
+async def obter_resposta_agente(numero: str, mensagem: str) -> tuple[str, dict | None, dict]:
     """Obtém resposta da Assistente com histórico da conversa"""
     from datetime import datetime
     import zoneinfo
@@ -771,8 +483,9 @@ async def obter_resposta_agente(numero: str, mensagem: str) -> tuple[str, dict |
 
     historico[numero].append({"role": "user", "content": mensagem})
 
-    if len(historico[numero]) > 20:
-        historico[numero] = historico[numero][-20:]
+    limite = int(CONFIG.get("max_historico_mensagens", 20))
+    if len(historico[numero]) > limite:
+        historico[numero] = historico[numero][-limite:]
 
     # Contexto temporal atual — a Assistente precisa de saber que dia/hora é agora
     agora = datetime.now(zoneinfo.ZoneInfo("Europe/Lisbon"))
@@ -828,8 +541,15 @@ async def obter_resposta_agente(numero: str, mensagem: str) -> tuple[str, dict |
     except Exception as e:
         print(f"⚠️ Falha ao obter disponibilidade: {e}")
 
+    # ── Guardrail de entrada ──
+    _suspeitas = detetar_injection(mensagem)
+    if _suspeitas:
+        print(f"🛡️ Possível injection detetada: {_suspeitas}")
+        contexto_tempo += aviso_prompt()
+
     mensagem_lead = ""
     metadata = None
+    _uso_total = {"prompt_tokens": 0, "completion_tokens": 0}
 
     async with httpx.AsyncClient() as client:
         for tentativa in range(3):
@@ -846,7 +566,11 @@ async def obter_resposta_agente(numero: str, mensagem: str) -> tuple[str, dict |
                     timeout=60,
                 )
                 resposta.raise_for_status()
-                resposta_completa = resposta.json()["choices"][0]["message"]["content"]
+                _body = resposta.json()
+                resposta_completa = _body["choices"][0]["message"]["content"]
+                uso = _body.get("usage", {}) or {}
+                _uso_total["prompt_tokens"] += uso.get("prompt_tokens", 0)
+                _uso_total["completion_tokens"] += uso.get("completion_tokens", 0)
             except Exception as e:
                 print(f"⚠️ Tentativa {tentativa+1}/3 falhou na API: {e}")
                 if tentativa == 2:
@@ -881,7 +605,7 @@ async def obter_resposta_agente(numero: str, mensagem: str) -> tuple[str, dict |
     # para não poluir o contexto do modelo nos turnos seguintes
     historico[numero].append({"role": "assistant", "content": mensagem_lead})
 
-    return mensagem_lead, metadata
+    return mensagem_lead, metadata, _uso_total
 
 async def guardar_lead_airtable(numero: str, metadata: dict):
     """Faz upsert do lead no Airtable pelo número de telefone"""
@@ -1251,6 +975,10 @@ def processar_metadata(numero: str, metadata: dict):
     if agendamento.get("confirmado") and agendamento.get("data_hora_iso"):
         chave_evento = agendamento["data_hora_iso"]
         if calendario_criado.get(numero) != chave_evento:
+            # Limite de segurança: evita criação em massa de eventos por abuso
+            if len(calendario_criado) >= MAX_EVENTOS_POR_CONVERSA and numero not in calendario_criado:
+                print(f"🛡️ Limite de eventos atingido — evento de {numero} não criado")
+                return
             calendario_criado[numero] = chave_evento
             asyncio.create_task(criar_evento_calendar(metadata, numero))
 
@@ -1384,10 +1112,26 @@ async def worker_numero(numero: str):
             print(f"⏳ [{numero}] turno completo ({len(blocos_cliente)} blocos): {texto_cliente}")
 
             try:
-                mensagem_lead, metadata = await obter_resposta_agente(numero, texto_cliente)
+                with Timer() as _t:
+                    mensagem_lead, metadata, uso = await obter_resposta_agente(numero, texto_cliente)
                 print(f"🤖 Assistente: {mensagem_lead}")
                 processar_metadata(numero, metadata)
                 await enviar_blocos(numero, mensagem_lead)
+                # Trace do turno (tokens, custo, latência, decisões)
+                try:
+                    record_turn(
+                        numero,
+                        user_message=texto_cliente,
+                        assistant_message=mensagem_lead,
+                        prompt_tokens=uso.get("prompt_tokens", 0),
+                        completion_tokens=uso.get("completion_tokens", 0),
+                        latency_ms=_t.elapsed_ms,
+                        tools=_ferramentas_usadas(metadata),
+                        metadata=metadata,
+                        model=DEEPSEEK_MODEL,
+                    )
+                except Exception as _e:
+                    print(f"⚠️ trace: {_e}")
             except Exception as e:
                 import traceback
                 print(f"❌ Erro ao processar turno: {traceback.format_exc()}")
@@ -1402,10 +1146,66 @@ async def worker_numero(numero: str):
         # e processa-as no próximo ciclo (respeitando o silêncio de novo).
 
 @app.get("/")
-def health():
-    return {"status": "Assistente — Assistente a empresa online 🤖"}
+async def health():
+    """Health/doctor: verifica as dependências e diz o que está partido."""
+    import time as _time
+    checks = {}
 
+    async def _check(name, coro):
+        t0 = _time.perf_counter()
+        try:
+            ok, detalhe = await coro
+        except Exception as e:
+            ok, detalhe = False, str(e)[:200]
+        checks[name] = {"ok": ok, "detail": detalhe,
+                        "ms": round((_time.perf_counter() - t0) * 1000, 1)}
 
+    async def c_evolution():
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{EVOLUTION_URL}/", timeout=8)
+            return r.status_code == 200, f"HTTP {r.status_code}"
+
+    async def c_llm():
+        if not DEEPSEEK_API_KEY:
+            return False, "DEEPSEEK_API_KEY ausente"
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{DEEPSEEK_URL}/models",
+                            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}, timeout=10)
+            return r.status_code == 200, f"HTTP {r.status_code}"
+
+    async def c_calendar():
+        try:
+            get_calendar_service().events().list(calendarId="primary", maxResults=1).execute()
+            return True, "ok"
+        except Exception as e:
+            return False, str(e)[:150]
+
+    async def c_airtable():
+        if not (AIRTABLE_TOKEN and AIRTABLE_BASE and AIRTABLE_TABLE):
+            return False, "credenciais Airtable ausentes"
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"https://api.airtable.com/v0/{AIRTABLE_BASE}/{AIRTABLE_TABLE}?maxRecords=1",
+                headers={"Authorization": f"Bearer {AIRTABLE_TOKEN}"}, timeout=10)
+            return r.status_code == 200, f"HTTP {r.status_code}"
+
+    async def c_telegram():
+        if not TELEGRAM_TOKEN:
+            return False, "TELEGRAM_TOKEN ausente"
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe", timeout=8)
+            return r.status_code == 200, f"HTTP {r.status_code}"
+
+    await asyncio.gather(
+        _check("evolution", c_evolution()),
+        _check("llm", c_llm()),
+        _check("calendar", c_calendar()),
+        _check("airtable", c_airtable()),
+        _check("telegram", c_telegram()),
+    )
+    tudo_ok = all(v["ok"] for v in checks.values())
+    return {"status": "ok" if tudo_ok else "degraded", "checks": checks,
+            "conversas_ativas": len(historico), "em_pausa": len(conversa_pausada)}
 @app.on_event("startup")
 async def _iniciar_polling_telegram():
     """Arranca o long-polling do Telegram (respostas do responsável ao handoff)."""

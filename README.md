@@ -1,113 +1,130 @@
 # Agente WhatsApp com IA (FastAPI + Evolution API + DeepSeek)
 
-Agente de atendimento e vendas para WhatsApp, escrito em Python (FastAPI), com
-qualificação de leads, agendamento automático em Google Calendar, CRM em Airtable,
-alertas por Telegram e **handoff bidirecional** para um humano assumir a conversa.
+Agente de atendimento e vendas para WhatsApp: qualificação de leads, agendamento
+automático em Google Calendar, CRM em Airtable, alertas por Telegram e
+**handoff bidirecional** para um humano assumir a conversa.
 
-Este repositório é um **template genérico**. O comportamento do agente é definido
-por um único prompt (o `SYSTEM_PROMPT` em `agente/agente.py`), que traz **lacunas
-`{{...}}` para preencher** com os dados do teu negócio.
+O comportamento é **dados, não código**: toda a configuração de um cliente vive
+em `configs/config.yaml` e o prompt em `prompts/system_prompt.md`. O `agente.py`
+não sabe quem é o cliente.
 
 ## Arquitetura
 
 ```
 ├── agente/
-│   ├── agente.py          # Toda a lógica (FastAPI, prompt, integrações)
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── .env.example       # Modelo de credenciais (copiar para .env)
-├── evolution/
-│   └── docker-compose.yml # Evolution API + Postgres + Redis + agente
-├── start.sh / stop.sh     # Arranque/paragem do stack
-└── .gitignore
+│   ├── agente.py          # loop/transporte (FastAPI) + integrações
+│   ├── config.py          # carrega config.yaml + renderiza o prompt
+│   ├── traces.py          # traces por conversa (tokens, custo, latência)
+│   ├── security.py        # guardrails anti-injection
+│   ├── Dockerfile · requirements.txt · .env.example
+├── configs/
+│   └── config.example.yaml  # copiar para config.yaml
+├── prompts/
+│   └── system_prompt.md     # prompt com lacunas {{...}}
+├── evals/
+│   ├── dataset.json · scorer.py · run_evals.py
+├── tests/                 # pytest
+├── evolution/docker-compose.yml
+├── DECISIONS.md · LICENSE · start.sh · stop.sh
 ```
 
-O stack corre com 4 containers:
-- **evolution-api** — gateway de ligação ao WhatsApp (Baileys)
-- **postgres** / **redis** — base de dados e cache da Evolution
-- **agente** — o teu agente FastAPI (só acessível na rede interna)
+Stack Docker: **evolution-api** (gateway WhatsApp) + **postgres** + **redis** +
+**agente** (FastAPI, só na rede interna).
 
 ## Funcionalidades
 
-- Atendimento automático com prompt configurável (tom, fases, regras de negócio)
-- Identificação obrigatória do lead (nome + negócio) antes de avançar
-- Qualificação com score e classificação de estado do lead
+- Atendimento automático com prompt/config por cliente
+- Identificação obrigatória do lead antes de avançar
+- Qualificação com score
 - Consulta da **agenda real** (Google Calendar) e proposta de **3 horários livres**
 - Criação automática do evento (com Google Meet, se aplicável)
 - Registo/atualização de leads no **Airtable** (upsert por telefone)
-- **Handoff para humano**: o agente pergunta ao responsável (Telegram) se está
-  disponível; se sim, o humano assume a conversa no WhatsApp e o agente cala-se
-  (mas guarda todo o contexto); se não, oferece reagendamento
-- Deteção de mensagens multimédia e resposta padrão
-
-## Pré-requisitos
-
-- Docker + Docker Compose
-- Uma chave de API de um LLM compatível com OpenAI (ex.: DeepSeek)
-- (Opcional) Conta Airtable, bot Telegram, credenciais Google Calendar
+- **Handoff para humano** via Telegram (SIM/NÃO, timeout, `/retomar`)
+- **Traces** por conversa: tokens, custo estimado, latência, ferramentas
+- **Guardrails** anti-injection à entrada + limite de ações sensíveis
+- **`/health`** tipo doctor: verifica Evolution, LLM, Calendar, Airtable, Telegram
+- **Tests** (pytest) e **evals** com scorer
 
 ## Instalação
 
-1. **Clona e configura as credenciais**
+1. **Credenciais**
    ```bash
-   cp agente/.env.example agente/.env
-   # edita agente/.env com as tuas chaves
+   cp agente/.env.example agente/.env     # editar com as tuas chaves
    ```
 
-2. **Preenche o prompt**
-   Abre `agente/agente.py` e substitui todas as lacunas `{{...}}` do
-   `SYSTEM_PROMPT` pelos dados do teu negócio (nome da empresa, serviços,
-   preços, etc.).
-
-3. **Google Calendar (opcional)**
-   Coloca o ficheiro de tokens OAuth no caminho definido em
-   `GOOGLE_TOKENS_PATH` (ver `evolution/docker-compose.yml`) antes de subir.
-
-4. **Sobe o stack**
+2. **Configuração do negócio**
    ```bash
-   cd evolution
-   docker compose up -d --build
+   cp configs/config.example.yaml configs/config.yaml
+   # editar config.yaml — identidade, serviços, preços, horários
    ```
 
-5. **Liga o WhatsApp**
-   Cria a instância na Evolution e lê o QR code:
+3. **Prompt**
+   Edita `prompts/system_prompt.md` se quiseres ajustar o comportamento.
+   As lacunas `{{...}}` são preenchidas a partir do `config.yaml`.
+   Para validar que não falta nada:
+   ```bash
+   python -c "from agente.config import *; print(missing_placeholders(load_config()))"
+   ```
+
+4. **Google Calendar (opcional)**: colocar o ficheiro de tokens no caminho
+   definido em `GOOGLE_TOKENS_PATH` (ver `evolution/docker-compose.yml`).
+
+5. **Subir o stack**
+   ```bash
+   cd evolution && docker compose up -d --build
+   ```
+
+6. **Ligar o WhatsApp** (criar instância + QR)
    ```bash
    curl -X POST "http://localhost:8080/instance/create" \
-     -H "Content-Type: application/json" \
-     -H "apikey: <a-tua-EVOLUTION_API_KEY>" \
+     -H "Content-Type: application/json" -H "apikey: <EVOLUTION_API_KEY>" \
      -d '{"instanceName":"meu-agente","integration":"WHATSAPP-BAILEYS","qrcode":true}'
-
-   # obter o QR (base64) para escanear no telemóvel
-   curl "http://localhost:8080/instance/connect/meu-agente" -H "apikey: <a-tua-key>"
+   curl "http://localhost:8080/instance/connect/meu-agente" -H "apikey: <EVOLUTION_API_KEY>"
    ```
 
-6. **Configura o webhook** (para o agente receber as mensagens)
+7. **Webhook**
    ```bash
    curl -X POST "http://localhost:8080/webhook/set/meu-agente" \
-     -H "Content-Type: application/json" -H "apikey: <a-tua-key>" \
+     -H "Content-Type: application/json" -H "apikey: <EVOLUTION_API_KEY>" \
      -d '{"webhook":{"enabled":true,"url":"http://agente:3000/webhook","events":["MESSAGES_UPSERT","CONNECTION_UPDATE","QRCODE_UPDATED"]}}'
    ```
 
-## Handoff humano (como funciona)
+## Qualidade (tests + evals)
 
-1. O lead pede para falar com uma pessoa → o agente marca `quer_humano: true`.
-2. O agente envia um Telegram ao responsável a perguntar se está disponível.
-3. **Responde SIM** → o agente cala-se nessa conversa e o humano assume no WhatsApp.
-4. **Responde NÃO** (ou não responde em 30s) → o agente oferece 3 horários ao lead.
-5. Se o **humano escrever directamente** no WhatsApp, o agente deteta e pausa-se
-   automaticamente, mantendo o contexto.
-6. Para retomar: comando `/retomar` (todas) ou `/retomar <telefone>` no Telegram.
+```bash
+pip install pytest pyyaml
+python -m pytest tests/ -q          # testes unitários
+python -m evals.run_evals --dry     # valida o dataset de evals
+python -m evals.run_evals           # corre os evals (precisa de DEEPSEEK_API_KEY)
+```
 
-> Usa um **bot Telegram próprio** para este agente — o long-polling requer acesso
-> exclusivo ao bot.
+Os evals escrevem `evals/results.json` com antes/depois por caso — é o número
+que responde a *"como sabes que isto funciona?"*.
+
+## Handoff humano
+
+1. Lead pede humano → `quer_humano: true` no METADATA.
+2. Agente pergunta ao responsável por Telegram se está disponível.
+3. **SIM** → agente pausa nessa conversa; humano assume no WhatsApp.
+4. **NÃO**/timeout (30s) → agente oferece 3 horários ao lead.
+5. Humano a escrever no WhatsApp → agente deteta e pausa sozinho, guarda contexto.
+6. `/retomar` ou `/retomar <telefone>` no Telegram → retoma.
+
+> Usa um bot Telegram **próprio** — o long-polling exige acesso exclusivo.
 
 ## Segurança
 
-- **Nunca** faças commit do `agente/.env` (já está no `.gitignore`).
-- Usa chaves fortes e distintas para a Evolution API.
-- Em produção, expõe a porta da Evolution API apenas a IPs de confiança ou
-  coloca-a atrás de um reverse proxy com TLS.
+- Nunca faz commit do `agente/.env` nem do `configs/config.yaml` (gitignored).
+- Muda o `POSTGRES_PASSWORD` e a `EVOLUTION_API_KEY` dos defaults (`changeme`).
+- `security.py` faz deteção heurística de injection — não é bala de prata;
+  complementa-se com separação de papéis no prompt e limite de ações.
+- Em produção, expõe a porta 8080 apenas a IPs de confiança ou atrás de TLS.
+
+## Decisões
+
+Ver [`DECISIONS.md`](DECISIONS.md) para os tradeoffs (Evolution vs Cloud API,
+DeepSeek, Telegram para handoff) e o que está por melhorar.
 
 ## Licença
 
-MIT (ou a que preferires).
+MIT — ver [`LICENSE`](LICENSE).

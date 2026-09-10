@@ -1,0 +1,81 @@
+# ──────────────────────────────────────────────────────────────
+#  Configuração do agente — TUDO o que é específico de um cliente
+#  vive aqui. O código (agente.py) nunca precisa de ser editado.
+#
+#  Copia este ficheiro para config.yaml e preenche.
+#  Os valores aqui listados com "exemplo" devem ser substituídos.
+# ──────────────────────────────────────────────────────────────
+
+# ── Identidade ──
+assistente: "Ana"                    # nome da assistente virtual
+empresa: "A Tua Empresa"             # nome da empresa
+responsavel: "João Silva"            # nome do fundador/responsável
+cidade: "Lisboa"
+pais: "Portugal"
+
+# ── Idioma e tom ──
+idioma: "português europeu (PT-PT)"
+idioma_proibido: "português do Brasil"
+idioma_nota: "PT-BR é falha grave."
+termos_obrigatorios: "ficheiro · utilizador · telemóvel · ecrã · morada · contacto · orçamento · mensalidade"
+termos_proibidos: 'você como tratamento padrão, "legal", "bacana", "tô", "tá", "né", "a gente"'
+
+# ── Negócio: preços e oferta ──
+n_linhas: "duas"
+valores_linha_negocio: 'Opção A" | "Opção B" | "Ambas" | "Indeciso'  # usado no METADATA
+servico_ancora: "gestão de redes sociais"
+preco_ancora: "150€"
+score_orcamento_minimo: "50€"
+links_portfolio: "a tua página web e o teu Instagram"
+
+# ── Grelha de preços (texto livre — o que a assistente pode responder) ──
+grelha_precos: |
+  SERVIÇO A (plano mensal):
+  - 1 unidade: 100€/mês
+  - 2 unidades: 180€/mês
+
+  SERVIÇO B (one-off):
+  - Pacote base: 50€
+
+# ── Linha de negócio 1 ──
+linha_1_nome: "Serviço Principal"
+linha_1_descricao: "Descreve aqui a tua principal linha de negócio."
+linha_1_servicos: "lista de serviços que ofereces nesta linha"
+linha_1_cliente_tipico: "quem é o cliente ideal desta linha"
+linha_1_caso_referencia: "descreve um caso de sucesso real (sem nomear o cliente), se tiveres."
+
+# ── Linha de negócio 2 (deixa vazio se só tiveres uma) ──
+linha_2_nome: "Segundo Serviço"
+linha_2_descricao: "Descreve a segunda linha, se existir."
+linha_2_detalhes: "detalhes/opções desta linha"
+linha_2_servicos: "serviços desta linha"
+linha_2_cliente_tipico: "cliente ideal desta linha"
+linha_2_argumento: "o argumento central de venda desta linha"
+linha_2_regra_direitos: "regras de propriedade/direitos, se aplicável"
+linha_2_regra_transparencia: "regras de transparência, se aplicável"
+roteamento_linha_1: "Fala em X, Y, Z → linha 1"
+roteamento_linha_2: "Fala em A, B, C → linha 2"
+
+# ── Casos extra ──
+objecoes_extra: ""                   # objeções específicas do teu negócio (opcional)
+fora_do_catalogo: "website, loja online, desenvolvimento de software"
+casos_fora_catalogo: ""               # texto extra sobre o que fazer fora do catálogo
+exemplo_dor_lead: "o que o teu cliente costuma dizer que o trava"
+exemplo_objetivo: "mais visibilidade, mais contactos, mais vendas?"
+
+# ── Agenda / horários disponíveis para reuniões ──
+#  (usado pelo código para gerar os slots livres)
+horarios:
+  dias_semana: [0, 1, 2, 3, 4]      # 0=segunda ... 6=domingo
+  janelas:                            # [hora_inicio, min_inicio, hora_fim, min_fim]
+    - [10, 0, 12, 0]
+    - [14, 0, 17, 0]
+  duracao_reuniao_min: 20
+  antecedencia_min_horas: 2
+  n_opcoes_sugeridas: 3
+
+# ── Comportamento ──
+handoff_timeout_seg: 30               # tempo que o responsável tem para responder
+pausa_ttl_horas: 24                   # quanto tempo a pausa dura sem interacção
+debounce_seg: 5                       # espera de silêncio antes de responder
+max_historico_mensagens: 20
