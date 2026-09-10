@@ -894,6 +894,7 @@ async def processar_handoff(numero: str, metadata: dict):
     """Pedido de atendimento humano: pergunta ao responsável (Telegram) se está disponível
     e decide o que dizer ao cliente — ou propõe marcar hora, se ele não estiver livre."""
     nome = metadata.get("nome") or "O cliente"
+    resp_nome = CONFIG.get("responsavel") or "responsável"
 
     # 1. Perguntar ao responsável se está disponível agora
     pend = {"evento": asyncio.Event(), "resposta": None, "cancelado": False}
@@ -940,7 +941,7 @@ async def processar_handoff(numero: str, metadata: dict):
         lista = "\n".join(f"{i+1}. {o}" for i, o in enumerate(opcoes))
         await enviar_blocos(
             numero,
-            f"O responsável está num outro atendimento neste momento, {nome}. "
+            f"O {resp_nome} está num outro atendimento neste momento, {nome}. "
             f"Assim que estiver livre, será ele a falar contigo.\n\n"
             f"Se preferires não esperar, posso já marcar um horário para falarem com calma. "
             f"Tenho estes disponíveis:\n\n{lista}\n\nQual te dá mais jeito?"
@@ -948,7 +949,7 @@ async def processar_handoff(numero: str, metadata: dict):
     else:
         await enviar_blocos(
             numero,
-            f"O responsável está num outro atendimento neste momento, {nome}. "
+            f"O {resp_nome} está num outro atendimento neste momento, {nome}. "
             f"Assim que estiver livre, será ele a falar contigo por aqui."
         )
     print(f"⏳ Handoff sem resposta/disponibilidade — opções enviadas a {numero}")
