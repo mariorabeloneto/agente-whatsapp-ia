@@ -16,10 +16,18 @@ load_dotenv()
 #  e prompts/system_prompt.md em runtime.
 from config import load_config, render_prompt
 from traces import record_turn, Timer
+from memory import HistoricoStore
 from security import detetar_injection, aviso_prompt, MAX_EVENTOS_POR_CONVERSA
 
 CONFIG = load_config()
 SYSTEM_PROMPT = render_prompt(CONFIG)
+
+# Histórico persistente (Redis se disponível; senão memória)
+historico = HistoricoStore(
+    redis_url=os.getenv("REDIS_URL"),
+    max_len=int(CONFIG.get("max_historico_mensagens", 20)),
+    ttl=int(CONFIG.get("historico_ttl_horas", 168)) * 3600,
+)
 
 GOOGLE_TOKENS_PATH = os.environ.get(
     "GOOGLE_CALENDAR_TOKENS",
@@ -329,9 +337,6 @@ AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN")
 AIRTABLE_BASE = os.getenv("AIRTABLE_BASE")
 AIRTABLE_TABLE = os.getenv("AIRTABLE_TABLE")
 
-# Memória de conversa por número
-historico: dict[str, list] = {}
-
 # Mensagens processadas recentemente (deduplicação de eventos)
 processados_recentes: set[str] = set()
 
@@ -478,14 +483,12 @@ async def obter_resposta_agente(numero: str, mensagem: str) -> tuple[str, dict |
     from datetime import datetime
     import zoneinfo
 
-    if numero not in historico:
-        historico[numero] = []
-
-    historico[numero].append({"role": "user", "content": mensagem})
-
+    hist = await historico.get(numero)
+    hist.append({"role": "user", "content": mensagem})
     limite = int(CONFIG.get("max_historico_mensagens", 20))
-    if len(historico[numero]) > limite:
-        historico[numero] = historico[numero][-limite:]
+    if len(hist) > limite:
+        hist = hist[-limite:]
+    await historico.set(numero, hist)
 
     # Contexto temporal atual — a Assistente precisa de saber que dia/hora é agora
     agora = datetime.now(zoneinfo.ZoneInfo("Europe/Lisbon"))
@@ -561,7 +564,7 @@ async def obter_resposta_agente(numero: str, mensagem: str) -> tuple[str, dict |
                         "model": DEEPSEEK_MODEL,
                         # 2048 evita cortar o bloco METADATA (alertas/agendamento perder-se-iam)
                         "max_tokens": 2048,
-                        "messages": [{"role": "system", "content": SYSTEM_PROMPT + contexto_tempo}] + historico[numero],
+                        "messages": [{"role": "system", "content": SYSTEM_PROMPT + contexto_tempo}] + hist,
                     },
                     timeout=60,
                 )
@@ -603,7 +606,7 @@ async def obter_resposta_agente(numero: str, mensagem: str) -> tuple[str, dict |
 
     # Guarda no histórico APENAS a mensagem limpa (sem o JSON METADATA),
     # para não poluir o contexto do modelo nos turnos seguintes
-    historico[numero].append({"role": "assistant", "content": mensagem_lead})
+    await historico.append(numero, "assistant", mensagem_lead)
 
     return mensagem_lead, metadata, _uso_total
 
@@ -1014,8 +1017,7 @@ async def webhook(request: Request):
                         ja_pausada = numero in conversa_pausada
                         conversa_pausada[numero] = time.time()
                         # Guarda no histórico para a Assistente manter o contexto da conversa
-                        historico.setdefault(numero, []).append(
-                            {"role": "assistant", "content": texto_responsavel})
+                        await historico.append(numero, "assistant", texto_responsavel)
                         if not ja_pausada:
                             print(f"🖐️ responsável assumiu a conversa com {numero} — Assistente em pausa")
             return {"status": "ignored"}
@@ -1062,7 +1064,7 @@ async def webhook(request: Request):
                 # Pausa expirou (sem interacção do responsável há muito tempo) — Assistente retoma
                 conversa_pausada.pop(numero, None)
             else:
-                historico.setdefault(numero, []).append({"role": "user", "content": mensagem})
+                await historico.append(numero, "user", mensagem)
                 print(f"🖐️ [{numero}] em pausa (responsável a atender) — contexto guardado, sem resposta")
                 return {"status": "paused"}
 
@@ -1205,7 +1207,8 @@ async def health():
     )
     tudo_ok = all(v["ok"] for v in checks.values())
     return {"status": "ok" if tudo_ok else "degraded", "checks": checks,
-            "conversas_ativas": len(historico), "em_pausa": len(conversa_pausada)}
+            "conversas_ativas": await historico.count(), "em_pausa": len(conversa_pausada),
+            "historico_persistente": historico.persistente}
 @app.on_event("startup")
 async def _iniciar_polling_telegram():
     """Arranca o long-polling do Telegram (respostas do responsável ao handoff)."""

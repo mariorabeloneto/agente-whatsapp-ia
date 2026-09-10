@@ -38,7 +38,14 @@ def _extrair_metadata(msg: str) -> dict:
 
 
 async def _correr_caso(case: dict, agente_mod) -> dict:
-    numero = f"3519000000{abs(hash(case['id'])) % 10000}@s.whatsapp.net"
+    # Número único por corrida: garante isolamento (o histórico é persistente)
+    import time as _time
+    numero = f"evals-{int(_time.time())}-{case['id']}@s.whatsapp.net"
+    # Cada caso começa com conversa limpa
+    try:
+        await agente_mod.historico.clear(numero)
+    except Exception:
+        pass
     ultimo_msg, ultimo_md = "", {}
     for turno in case["turns"]:
         resposta = await agente_mod.obter_resposta_agente(numero, turno)

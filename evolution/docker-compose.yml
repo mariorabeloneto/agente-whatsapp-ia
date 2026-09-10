@@ -66,11 +66,13 @@ services:
     restart: unless-stopped
     depends_on:
       - evolution-api
+      - redis
     environment:
       - EVOLUTION_URL=http://evolution-api:8080
       - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-changeme}
       - EVOLUTION_INSTANCE=${EVOLUTION_INSTANCE:-meu-agente}
       - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379/7
     env_file:
       - ../agente/.env
     volumes:
