@@ -1,0 +1,23 @@
+# ── Segredos e credenciais ──
+.env
+*.env
+agente/.env
+google_calendar_tokens.json
+*.pem
+*.key
+
+# ── Logs e dados locais ──
+*.log
+agente.log
+__pycache__/
+*.pyc
+
+# ── Ambientes virtuais ──
+venv/
+.venv/
+env/
+
+# ── Editores / sistema ──
+.vscode/
+.idea/
+.DS_Store
