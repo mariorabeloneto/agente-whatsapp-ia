@@ -42,6 +42,38 @@ importa para o modelo de negócio.
 **Trade-off:** depende de um fornecedor chinês (soberania de dados) e sem SLA
 robusto. Mitigação: a interface é OpenAI-compatible, por isso a migração é
 trivial. **O LLM deve ser configuração, não código** — ver Fase 2 do roadmap.
+→ **Cumprido**: ver ADR-006.
+
+---
+
+## ADR-006 — Fornecedor de LLM configurável + decisão por evals
+
+**Contexto:** o RGPD tornou a transferência para a China (DeepSeek) um risco
+comercial e jurídico: exige SCCs e uma avaliação de risco que nenhum cliente
+pequeno vai querer discutir. Existem alternativas na UE (Mistral, OVHcloud AI
+Endpoints) mas mudar de modelo pode degradar a qualidade do prompt já afinado.
+
+**Decisão (2026-09-10):**
+1. O fornecedor de LLM passa a ser **configuração** (`agente/llm.py` +
+   `LLM_PROVIDER`), com `deepseek`, `mistral` e `ovhcloud` suportados de fábrica.
+   A chave/modelo/URL/preços são resolvidos do `.env`; o código não sabe quem é
+   o fornecedor.
+2. A troca em produção é decidida por **evals comparativos**, não por opinião:
+   mesmo dataset nos vários fornecedores, com qualidade, latência (p50/p95),
+   tokens e custo medidos (`python -m evals.run_evals --provider X` +
+   `python -m evals.comparar`).
+
+**Porquê:** os três fornecedores falam a API compatível com a OpenAI, logo a
+migração não toca no comportamento do agente; o que muda é o modelo. Medir
+resolve o único risco real (qualidade do prompt num modelo diferente).
+
+**Critérios definidos *a priori*** (para não racionalizar depois): qualidade ≥
+baseline − 1 caso, latência p50 sem agravamento > 50%, dados em solo UE.
+
+**Trade-off:** manter três fornecedores testáveis é mais código de configuração
+e mais uma superfície de teste (`tests/test_llm.py`). Aceitável: é o que
+transforma "achamos que a Mistral é boa" em "medimos e é igual a −0,5 % de
+qualidade com dados em solo UE".
 
 ---
 

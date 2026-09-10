@@ -24,10 +24,17 @@ TRACES_FILE = TRACES_DIR / "conversations.jsonl"
 # para cumprir minimização de dados / RGPD.
 ANONIMIZAR = os.environ.get("TRACES_ANONIMIZAR", "false").lower() in ("1", "true", "yes", "sim")
 
-# Preço por 1M tokens (USD) — ajustar ao modelo usado. Valores por omissão:
-# DeepSeek chat (entrada/saída). Configurável por env.
-PRICE_IN_PER_M = float(os.environ.get("PRICE_IN_PER_M", "0.27"))
-PRICE_OUT_PER_M = float(os.environ.get("PRICE_OUT_PER_M", "1.10"))
+# Preço por 1M tokens (USD) — usado para estimar custo nos traces e relatórios.
+# Por omissão segue o fornecedor ativo (agente/llm.py); PRICE_IN_PER_M /
+# PRICE_OUT_PER_M sobrepõem-no. Confirma os preços na página oficial do fornecedor.
+try:  # o relatório também pode correr isolado, sem o resto do agente
+    from llm import LLM as _LLM
+    _PI, _PO = _LLM.preco_in, _LLM.preco_out
+except Exception:  # pragma: no cover
+    _PI, _PO = 0.27, 1.10
+
+PRICE_IN_PER_M = float(os.environ.get("PRICE_IN_PER_M", _PI))
+PRICE_OUT_PER_M = float(os.environ.get("PRICE_OUT_PER_M", _PO))
 
 
 def _ident(numero: str) -> str:

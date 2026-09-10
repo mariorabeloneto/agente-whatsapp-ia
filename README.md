@@ -95,11 +95,22 @@ Stack Docker: **evolution-api** (gateway WhatsApp) + **postgres** + **redis** +
 pip install pytest pyyaml
 python -m pytest tests/ -q          # testes unitários
 python -m evals.run_evals --dry     # valida o dataset de evals
-python -m evals.run_evals           # corre os evals (precisa de DEEPSEEK_API_KEY)
+python -m evals.run_evals --provider deepseek   # corre os evals (chave em agente/.env)
 ```
 
-Os evals escrevem `evals/results.json` com antes/depois por caso — é o número
-que responde a *"como sabes que isto funciona?"*.
+Os evals escrevem `evals/results-<provider>.json` com antes/depois por caso,
+latência e custo — é o número que responde a *"como sabes que isto funciona?"*.
+
+### Comparar fornecedores de LLM (DeepSeek vs Mistral vs OVHcloud)
+
+```bash
+python -m evals.run_evals --provider deepseek
+python -m evals.run_evals --provider mistral
+python -m evals.comparar            # gera evals/comparativo.md (tabela + recomendação)
+```
+
+Trocar de fornecedor é configuração, não código: ver `agente/llm.py` e
+`docs/fornecedores-llm.md`.
 
 ## Handoff humano
 

@@ -6,7 +6,7 @@ COPY agente/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Código do agente
-COPY agente/agente.py agente/config.py agente/traces.py agente/security.py agente/memory.py agente/relatorio.py agente/privacidade.py ./
+COPY agente/agente.py agente/config.py agente/traces.py agente/security.py agente/memory.py agente/relatorio.py agente/privacidade.py agente/llm.py ./
 
 # Configuração e prompt (comportamento = dados, não código)
 COPY configs ./configs

@@ -15,6 +15,7 @@ load_dotenv()
 #  Comportamento = dados. O agente não sabe quem é o cliente: lê configs/config.yaml
 #  e prompts/system_prompt.md em runtime.
 from config import load_config, render_prompt
+from llm import LLM
 from traces import record_turn, Timer
 from memory import HistoricoStore
 from security import detetar_injection, aviso_prompt, MAX_EVENTOS_POR_CONVERSA
@@ -324,10 +325,12 @@ async def criar_evento_calendar(metadata: dict, numero: str):
 
 app = FastAPI()
 
-# Clientes
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-DEEPSEEK_URL = os.getenv("DEEPSEEK_URL", "https://api.deepseek.com/v1")
+# Cliente LLM — fornecedor escolhido por configuração (ver agente/llm.py).
+# Trocar de fornecedor = LLM_PROVIDER no .env + restart; nada muda no código.
+# Os nomes DEEPSEEK_* ficam como aliases do fornecedor ATIVO (compatibilidade).
+DEEPSEEK_API_KEY = LLM.api_key
+DEEPSEEK_MODEL = LLM.modelo
+DEEPSEEK_URL = LLM.url
 EVOLUTION_URL = os.getenv("EVOLUTION_URL")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 EVOLUTION_INSTANCE = os.getenv("EVOLUTION_INSTANCE")
@@ -1259,11 +1262,11 @@ async def health():
 
     async def c_llm():
         if not DEEPSEEK_API_KEY:
-            return False, "DEEPSEEK_API_KEY ausente"
+            return False, f"{LLM.chave_env} ausente"
         async with httpx.AsyncClient() as c:
             r = await c.get(f"{DEEPSEEK_URL}/models",
                             headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}, timeout=10)
-            return r.status_code == 200, f"HTTP {r.status_code}"
+            return r.status_code == 200, f"{LLM.resumo()} — HTTP {r.status_code}"
 
     async def c_calendar():
         try:
@@ -1297,10 +1300,12 @@ async def health():
     )
     tudo_ok = all(v["ok"] for v in checks.values())
     return {"status": "ok" if tudo_ok else "degraded", "checks": checks,
+            "fornecedor_llm": {"id": LLM.id, "modelo": LLM.modelo, "regiao": LLM.regiao},
             "conversas_ativas": await historico.count(), "em_pausa": len(conversa_pausada),
             "historico_persistente": historico.persistente,
             "pausado": await historico.get_flag("pausa_global")}
 @app.on_event("startup")
 async def _iniciar_polling_telegram():
     """Arranca o long-polling do Telegram (respostas do responsável ao handoff)."""
+    print(f"🔌 LLM ativo: {LLM.resumo()} | RGPD: {LLM.rgpd}")
     asyncio.create_task(loop_polling_telegram())

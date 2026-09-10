@@ -28,4 +28,6 @@ env/
 # ── Traces e resultados de evals (gerados) ──
 traces/
 evals/results.json
+evals/results*.json
+evals/comparativo.md
 .pytest_cache/
