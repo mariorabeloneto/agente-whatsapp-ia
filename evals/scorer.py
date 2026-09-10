@@ -15,7 +15,8 @@ def _fase(mensagem: str) -> str:
     m = mensagem.lower()
     if "assistente virtual" in m and "em que posso ajudar" in m:
         return "abertura"
-    if "qual é o teu nome" in m or "como te chamas" in m:
+    if (("nome" in m and ("negócio" in m or "negocio" in m or "teu" in m))
+            or "como te chamas" in m or "nome do teu" in m):
         return "identificacao"
     if any(p in m for p in ("o que tens hoje", "o que procuras", "querias que acontecesse")):
         return "diagnostico"
@@ -39,7 +40,13 @@ def score_case(case: dict, result: dict) -> dict:
         checks["tools"] = esperadas.issubset(tools)
 
     for campo, valor in (case.get("expect_metadata") or {}).items():
-        checks[f"metadata.{campo}"] = md.get(campo) == valor
+        obtido = md.get(campo)
+        if isinstance(valor, dict) and isinstance(obtido, dict):
+            # compara só as sub-chaves indicadas
+            ok = all(obtido.get(k) == v for k, v in valor.items())
+        else:
+            ok = obtido == valor
+        checks[f"metadata.{campo}"] = ok
 
     for sub in (case.get("must_contain") or []):
         checks[f"contem:{sub[:20]}"] = sub.lower() in msg.lower()
